@@ -1,0 +1,67 @@
+#include "mbed.h"
+#include <cstdio>
+
+using namespace std::chrono;
+
+static constexpr size_t   SAMPLE_NUM        = 100;
+static constexpr milliseconds REPORT_INTERVAL = 500ms;
+static constexpr milliseconds LOOP_DELAY      = 10ms;
+static constexpr float    TEMP_THRESHOLD    = 50.0f;
+
+AnalogIn        tempSensor(A1);
+AnalogIn        potSensor(A0);
+DigitalIn       gasSensor(PE_12, PullUp);
+UnbufferedSerial usbSerial(USBTX, USBRX, 115200);
+Timer           sysTimer;
+
+static float    tempHistory[SAMPLE_NUM] = {0};
+static size_t   tempIndex              = 0;
+static uint32_t lastReportTime         = 0;
+
+void sampleTemperature() {
+    tempHistory[tempIndex++] = tempSensor.read();
+    if (tempIndex >= SAMPLE_NUM) tempIndex = 0;
+}
+
+float getAverageTemperature() {
+    float sum = 0.0f;
+    for (auto value : tempHistory) sum += value;
+    return (sum / SAMPLE_NUM) * 3.3f / 0.01f;
+}
+
+void reportStatus() {
+    uint32_t now = duration_cast<milliseconds>(sysTimer.elapsed_time()).count();
+    if (now - lastReportTime < REPORT_INTERVAL.count()) return;
+    lastReportTime = now;
+
+    float tempC   = getAverageTemperature();
+    float potPct  = potSensor.read() * 100.0f;
+    bool  gasDet  = (gasSensor.read() == 0);
+
+    char buffer[64];
+    int  n = snprintf(buffer, sizeof(buffer), "Temperature: %.2f C\r\n", tempC);
+    usbSerial.write(buffer, n);
+
+    n = snprintf(buffer, sizeof(buffer), "Pot: %.2f%%\r\n", potPct);
+    usbSerial.write(buffer, n);
+
+    n = snprintf(buffer, sizeof(buffer), "Gas: %s\r\n", gasDet ? "Yes" : "No");
+    usbSerial.write(buffer, n);
+
+    const char* alarmMsg;
+    if (gasDet && tempC > TEMP_THRESHOLD) alarmMsg = "Gas + Temp Alarm";
+    else if (gasDet)                     alarmMsg = "Gas Alarm";
+    else if (tempC > TEMP_THRESHOLD)      alarmMsg = "Temperature Alarm";
+    else                                   alarmMsg = "No Alarm";
+    n = snprintf(buffer, sizeof(buffer), "Alarm: %s\r\n", alarmMsg);
+    usbSerial.write(buffer, n);
+}
+
+int main() {
+    sysTimer.start();
+    while (true) {
+        sampleTemperature();
+        reportStatus();
+        ThisThread::sleep_for(LOOP_DELAY);
+    }
+}
